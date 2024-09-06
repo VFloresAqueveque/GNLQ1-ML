@@ -1,0 +1,731 @@
+###################################
+#Proyecto Geomorfología
+#Aplicación Geomorfología
+#Autores: Hugo Neira Santander / Valentina Flores Aqueveque / Cristina Ortega Painepan
+###################################
+
+library(caret)
+library(raster)
+library(pls)
+library(raster)
+library(e1071)
+library(caret)
+library(rgdal)
+library(matrixStats)
+library(RStoolbox)
+library(factoextra)
+library(VSURF)
+library(devtools)
+library(sf)
+library(sp)
+library(ggplot2)
+library(randomForest)
+library(dplyr)
+library(RColorBrewer)
+library(glcm)
+
+#Imagenes L5-Indices NVDVI, NDWI, IndicesTopograficos-S1
+# fijar carpeta de trabajo
+setwd('D:/Personal/OHC/PaperQuintero/Predictores/')
+
+#Extraer DEM para hacer más análsis
+
+Dem<- stack("Landsat_5_All_Bands.tif")
+extent(Dem)
+names(Dem)
+nlayers(Dem)
+
+Dem1 <- dropLayer(Dem, c(1:10, 12:17))
+plot(Dem1)
+
+# guardar los resultados
+writeRaster(Dem1, "DEM_Quintero.tif")
+
+#Luego de modelar las variables topograficas se cargan a la imagen
+#import all files in a single folder as a list 
+setwd('D:/Personal/OHC/PaperQuintero/Predictores/vartopos/var')
+rastlist <- list.files(path = "D:/Personal/OHC/PaperQuintero/Predictores/vartopos/var", pattern="tif$", all.files=TRUE, full.names=FALSE)
+### SITUAACIÓN IDEAL CON MISMO EXTENT
+allrasters <- stack(rastlist)
+names(allrasters)
+
+totalraster <- stack(Dem, allrasters)
+extent(totalraster)
+names(totalraster)
+nlayers(totalraster)
+plot(totalraster)
+
+# Obtiene los nombres de las bandas
+nombres_de_bandas <- names(totalraster)
+
+# Obtiene las posiciones de las bandas
+posiciones_de_bandas <- 1:nlayers(totalraster)
+
+# Combina nombres y posiciones en un data frame
+info_bandas <- data.frame(Nombre = nombres_de_bandas, Posición = posiciones_de_bandas)
+
+# Imprime la información de las bandas
+print(info_bandas)
+
+library(rasterVis)
+
+# Define el orden deseado para las bandas
+nuevo_orden <- c(1:10, 15:17, 11:13, 18:29, 60:61)  # Cambia esto según el orden que desees
+
+# Reordena las bandas del raster
+totalraster_ordenado <- totalraster[[nuevo_orden]]
+
+# Imprime la información de las bandas
+print(totalraster_ordenado)
+names(totalraster_ordenado)
+
+# plot RGB
+plotRGB(totalraster_ordenado, r=4, g=3, b=2, stretch="lin", main='Landsat 5 Combinación 432') #opcional incoporar (scale = 1000,stretch = "hist")
+
+L5_S1_TOPO <- stack(totalraster_ordenado)
+
+# guardar los resultados
+#writeRaster(totalraster_ordenado, "totalraster.tif",options=c('TFW=YES'), overwrite=TRUE, datatype='FLT4S')
+
+# Parte Código Geomorfo ---------------------------------------------------
+##################################################################################
+######################
+#### RECORTE RASTER CON SHAPE
+######################
+# fijar carpeta de trabajo L5
+#setwd('D:/Personal/OHC/PaperQuintero/Predictores')
+
+#L5_S1_TOPO <- stack("totalraster.tif")
+extent(totalraster_ordenado)
+names(totalraster_ordenado)
+nlayers(totalraster_ordenado)
+
+# resumen de todas las bandas
+L5_S1_TOPO@layers
+# revisar la extensión geográfica de la extensión de la imagen
+extent(L5_S1_TOPO)
+# revisar el sistema de coordenadas definido
+crs(L5_S1_TOPO) 
+
+#Ploteo litho de la imagen
+plotRGB(L5_S1_TOPO,
+        r = 6, g = 4, b = 2,
+        scale = 1000,
+        stretch = "hist")
+
+# Cargando un shapefile de puntos control
+# Fijarse que el shape no sea multipoint
+library(rgdal)
+setwd('D:/Personal/OHC/PaperQuintero/Predictores')
+ref <- readOGR('.', 'geopoint')
+print(ref)
+plot(ref)
+summary(ref)
+
+ref <- na.omit(ref)
+
+# Estadisticas de la imagen, y los puntos
+summary(L5_S1_TOPO) #resumen por banda
+
+### Revision de los datos para validar
+### boxplot e Histograma
+#boxplot(L5_S1_TOPO)
+
+#### Opcional para ver el histograma completo de las bandas
+hist(L5_S1_TOPO)
+
+### Eliminar bandas que estan fuera del rango de los resultados obtenidos
+#hiper_img2 <- dropLayer(hiper_img, c(14))
+nlayers(L5_S1_TOPO)
+#summary(hiper_img)
+
+# Nombre de las capas
+names(L5_S1_TOPO)
+
+# Agregar los puntos de control
+par(new = T)
+plot(ref)
+plot(ref, col = ref@data$Id, add = T)	 
+
+# Extracci?n de las firmas espectrales en los puntos de control se deben ver de colores los puntos
+ref_data_tr <- extract(L5_S1_TOPO, ref)
+
+# Se transforma la matriz de datos resultante en un data frame
+ref_data_tr <- as.data.frame(ref_data_tr)	
+
+## Comprobar que haya hecho el cruce de los puntos con los valores de las firmas espectrales
+head(ref_data_tr)
+
+# Plotear todo el espectro
+dev.off()
+for (i in 1:nrow(ref_data_tr)){
+  par(new = T) 
+  plot(1:30, ref_data_tr[i,], type = "l", col = ref@data$Id[i], ylim = c(1,30), ylab = "Reflectance", xlab = "Super imagen", main = "Firma espectral Imagen")
+} 
+
+# Uniremos al dataframe que contiene la firma espectral en los puntos de referencia
+ref_data_tr$Id <- ref@data$Id
+ref_data_tr$clase <- ref@data$clase
+# Nombre de las capas para comprobar que se haya incorporado el id
+head(ref_data_tr)
+
+#Unir las coordenadas
+ref_data_tr$ESTE <- ref@data$ESTE
+ref_data_tr$NORTE <- ref@data$NORTE
+
+# corroborar
+head(ref_data_tr)
+
+###########################################
+#SVM con las bandas de la imagen
+###########################################
+trainval <- ref_data_tr[,1:30]
+treespec <- ref_data_tr$Id
+length(trainval)
+length(treespec)
+as.factor(treespec)
+# establecer una semilla para permitir la reproducción de los resultados
+set.seed(523)
+# establecer un rango de valores gamma y de costo que se probarán en el ajuste de parámetros
+gammat = seq(.1, .9, by = .1)
+costt = seq(1,128, by = 12)
+# comprobar los parámetros a probar
+gammat
+costt 
+#ejecutar el ajuste de parámetros
+tune1 <- tune.svm(trainval, as.factor(treespec), gamma = gammat, cost=costt) #para imagenes peque?as
+#tune1 <- tune.svm(trainval, treespec, gamma = gammat, cost=costt)
+#ploteamos los resultados del ajuste de parámetros
+plot(tune1)
+
+gamma <- tune1$best.parameters$gamma
+cost <- tune1$best.parameters$cost
+
+# entrenar el modelo con todas las muestras disponibles
+model <- svm(trainval, as.factor(treespec), gamma = gamma, cost = cost, probability = TRUE)
+# entrenar el modelo con validación cruzada de 5 veces para obtener la primera impresión sobre la exactitud
+model2 <- svm(trainval, as.factor(treespec), gamma = gamma, cost = cost, probability = TRUE, cross=10)
+summary(model)
+summary(model2)
+
+# establecer directorio de salida para guardar el mapa de clasificación
+setwd('D:/Personal/OHC/PaperQuintero/Resultados/Revision1')
+# aplicar el modelo de clasificación a la imagen usando la función de predicción
+#svmPred <- predict(sar_img, model, filename="sar_predict_SVM_supremo_v1", na.rm=TRUE, progress='text', format='GTiff', datatype='INT1U',overwrite=TRUE)
+svmPred2 <- predict(L5_S1_TOPO, model2, filename="Geomorfo_Quintero_SVM", na.rm=TRUE, progress='text', format='GTiff', datatype='INT1U',overwrite=TRUE)
+#summary(svmPred)
+summary(svmPred2)
+
+# Mapa de clasificaci?n
+#plot(svmPred, main="Clasificaci?n SVM")
+plot(svmPred2, main="Clasificación SVM")
+#legend("topright", legend=c("1 = Caliza marmolizada", "2 = Arboreo", "3 = Pavimento", "4 = Impermeable", "5 = Piscina", "6 = Sombra", "7 = Cancha", "8 = Impermeable2"))
+
+confusionMatrix(model2$fitted, as.factor(treespec))
+
+
+library(e1071)
+
+# Ajustar el modelo SVM con cross=10 para obtener el modelo con validación cruzada
+model2 <- svm(trainval, as.factor(treespec), gamma = gamma, cost = cost, probability = TRUE, cross = 10)
+
+# Obtener los vectores de soporte
+support_vectors <- trainval[model2$index,]
+
+# Calcular la importancia relativa de las variables basada en la magnitud de los coeficientes de los vectores de soporte
+importance <- colMeans(support_vectors)
+
+# Ordenar las variables por importancia
+importance_order <- order(importance, decreasing = TRUE)
+
+# Mostrar las variables más importantes
+top_n <- 30  # Cambia esto al número de variables que deseas mostrar
+top_variables <- colnames(trainval)[importance_order[1:top_n]]
+print(top_variables)
+
+importance <- colMeans(support_vectors)
+importance_percent <- (importance / sum(importance)) * 100
+importance_log <- log10(importance_percent)
+
+library(ggplot2)
+
+# Crear un dataframe con los nombres de las variables y sus importancias logarítmicas
+variable_importance <- data.frame(Variable = colnames(trainval), Importancia = importance_log)
+
+# Ordenar el dataframe por importancia logarítmica
+variable_importance <- variable_importance[order(variable_importance$Importancia, decreasing = TRUE),]
+
+# Crear el gráfico de barras
+ggplot(variable_importance, aes(x = Variable, y = Importancia)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Importancia de las Variables (Logaritmo en base 10)", x = "Variable", y = "Log10(Importancia (%))") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+############################################
+# clasificacion usando PCA
+############################################
+
+# calcular una analisis de componentes principales (PCA) para el imagen
+pca <- rasterPCA(L5_S1_TOPO, nSamples=1000, spca=T)
+# Extraer el modelo 
+pca_ras <- pca$map
+#Además del nuevo stack de ráster que contiene los componentes de PCA
+pca_mod <- pca$model
+# Grafico de valor 
+#utilizando la funcion  fviz-eig  del paquete factoextra:
+fviz_eig(pca_mod)
+
+# podemos ver los primeros 10 componentes
+dev.off()
+#x11()
+par(mfrow=c(2,3))
+plot(pca_ras)
+plot(pca_ras[[c(1:30)]])    
+
+trainval_pca <- extract(pca_ras[[1:30]], ref)
+
+
+# Ejecutamos la misma clasificaci?n SVM que hicimos antes, incluyendo tambien el ajuste de parametros
+set.seed(523)
+# ajuste de parametros
+gammat = seq(.1, .9, by = .1)   
+costt = seq(1,128, by = 12)  
+tune2 <- tune.svm(trainval_pca, as.factor(treespec), gamma = gammat, cost=costt) #para imagenes peque?as
+#tune2 <- tune.svm(trainval_pca, treespec, gamma = gammat, cost=costt)
+plot(tune2)
+summary(tune2)
+
+# extraccion de los mejores parametros
+gamma2 <- tune2$best.parameters$gamma
+cost2 <- tune2$best.parameters$cost
+# entrenar el modelo con todas las muestras disponibles
+model_pca <- svm(trainval_pca, as.factor(treespec), gamma = gamma2, cost = cost2, probability = TRUE)
+# entrenar el modelo con validaciÃ³n cruzada de 10 veces para obtener la primera impresiÃ³n sobre la exactitud
+model_pca2 <- svm(trainval_pca, as.factor(treespec), gamma = gamma2, cost = cost2, probability = TRUE, cross=10)
+summary(model_pca2)
+summary(model_pca)
+# mapa de prediccion
+# set directorio de salida
+#setwd("C:/Laboratorio")
+
+# establecer directorio de salida para guardar el mapa de clasificación
+setwd('D:/Personal/OHC/PaperQuintero/Resultados/Revision1')
+
+# aplicar clasificador a toda la imagen 
+#svmPred_pca <- predict(pca_ras[[1:18]], model_pca, filename="sar_predict_PCA_SVM_example_v1.tif", na.rm=TRUE, progress='text', format='GTiff', datatype='INT1U',overwrite=TRUE)  
+svmPred_pca2 <- predict(pca_ras[[1:30]], model_pca2, filename="Clasificación_PCA.tif", na.rm=TRUE, progress='text', format='GTiff', datatype='INT1U',overwrite=TRUE)
+
+# Ploteo Mapa PCA
+dev.off()
+#plot(svmPred_pca, main="Clasificaci?n PCA")
+plot(svmPred_pca2, main="Clasificacion PCA2")
+#legend("topright", legend=c("1 = Pasto", "2 = Arboreo", "3 = Pavimento", "4 = Impermeable", "5 = Piscina", "6 = Sombra", "7 = Cancha", "8 = Impermeable2")) 
+library(caret)
+confusionMatrix(model_pca2$fitted, as.factor(treespec))
+confusionMatrix(model_pca$fitted, as.factor(treespec))
+
+library(e1071)
+
+# Después de entrenar el modelo SVM con PCA (model_pca2 en este caso)
+# Crear una función para calcular la importancia de las variables
+calculate_variable_importance <- function(model, data, response_column) {
+  n_permutations <- 100  # Número de permutaciones
+  original_predictions <- predict(model, data)
+  original_accuracy <- sum(original_predictions == response_column) / length(response_column)
+  variable_importance <- numeric(ncol(data))
+  
+  for (i in 1:ncol(data)) {
+    permuted_data <- data
+    permuted_data[, i] <- sample(permuted_data[, i])
+    permuted_predictions <- predict(model, permuted_data)
+    permuted_accuracy <- sum(permuted_predictions == response_column) / length(response_column)
+    variable_importance[i] <- original_accuracy - permuted_accuracy
+  }
+  
+  return(variable_importance)
+}
+
+# Calcular la importancia de las variables
+importancia_variables <- calculate_variable_importance(model_pca2, trainval_pca, as.factor(treespec))
+
+# Crear un gráfico de barras para visualizar la importancia de las variables
+barplot(importancia_variables, names.arg = colnames(trainval_pca), las = 2, main = "Importancia de las Variables PCA-SVM")
+
+
+############################################################
+#### Clasificaci?n mediante una combinaciOn de seleccionn de 
+#### caracteristicas (VSURF) y extraccion de caracteristicas (PCA)
+############################################################
+
+# Primero seleccionamos los primeros 30 componentes de la pila de raster de PCA y extraemos los valores correspondientes
+set.seed(523)
+pca_ras2 <- L5_S1_TOPO[[1:30]]
+trainval_pca2 <- extract(pca_ras2, ref)
+#is.na(trainval_pca2)
+#na.omit(trainval_pca2)
+#na.omit(treespec)
+
+#is.na(pca_ras2) <- pca_ras2 == NA
+#na.omit(pca_ras2)
+
+library(VSURF)
+# ejecutamos el algoritmo de selección de caracteristicas VSURF. "Este algoritmo se basa en Random Forest"
+vsurf_pca <- VSURF(trainval_pca2, as.factor(treespec), ntree=1000, parallel = T, ncores = 8)
+
+# Se puede acceder a los identificadores de columna de este conjunto de variables seleccionadas con el comando
+vsurf_pca$varselect.pred
+
+# Crearemos un subconjunto de nuestro espacio de funciones de prediccion
+trainval_vsurf <- trainval_pca2[,vsurf_pca$varselect.pred]
+
+# Ejecutar el ajuste de parametros
+set.seed(523)
+gammat = seq(.1, .9, by = .1)
+costt = seq(1,128, by = 12)
+tune3 <- tune.svm(trainval_vsurf, as.factor(treespec), gamma = gammat, cost=costt)
+plot(tune3)
+# tomar los mejores parametros
+gamma3 <- tune3$best.parameters$gamma
+cost3 <- tune3$best.parameters$cost
+# entrenar el modelo con las mejores muestras disponibles
+model_vsurf <- svm(trainval_vsurf, as.factor(treespec), gamma = gamma3, cost = cost3, probability = TRUE)
+# entrenar el modelo con 10 validaciones cruzadas para obtner las exactitudes
+model_vsurf2 <- svm(trainval_vsurf, as.factor(treespec), gamma = gamma3, cost = cost3, probability = TRUE, cross=10)
+summary(model_vsurf2)
+
+# Seleccionar el directorio de salida para guardar el mapa de clasificacion 
+setwd('D:/Personal/OHC/PaperQuintero/Resultados/Revision1')
+# aplicar el clasificador a toda la imagen
+svmPred_vsurf <- predict(pca_ras2[[vsurf_pca$varselect.pred]], model_vsurf2, filename="Georfolgia_VSURF.tif", na.rm=TRUE, progress='text', format='GTiff', datatype='INT1U',overwrite=TRUE)  
+
+# Ploteo mapa
+dev.off()
+plot(svmPred_vsurf, main="Clasificacion VSURF - PCA")
+#legend("topright", legend=c("1 = Pasto", "2 = Arboreo", "3 = Pavimento", "4 = Impermeable", "5 = Piscina", "6 = Sombra", "7 = Cancha", "8 = Impermeable2"))  
+
+confusionMatrix(model_vsurf2$fitted, as.factor(treespec))
+
+## Matriz de Consusi?n comparando la clasificaci?n Vsurf con PCA con respecto a 
+## al primer resultado de clasificaci?n para evaluar ambos modelos
+
+# Extraer puntos de la imagen clasificada (VSURF - PCA)
+prediction <- extract(svmPred_pca2, ref)
+prediction <- unlist(prediction)
+predictiontable <- as.data.frame(prediction)
+na.omit(predictiontable)
+# Se extraen los puntos a evaluar de la primera clasificacion (bandas originales) para evaluar modelos
+test <- extract(svmPred2, ref)
+test <- unlist(test)
+testtable <- as.data.frame(test)
+na.omit(testtable)
+### matriz de confusion
+u <- union(prediction, test)
+t <- table(factor(prediction, u), factor(test, u))
+confusionMatrix(t)
+
+
+confusionMatrix(table(data=predictiontable$prediction, reference=testtable$test)) 
+
+library(RStoolbox)
+#filter <- majority_filter(svmPred_pca2, svmPred_pca2_filter, filterx = 20, filtery = 20,verbose_mode = FALSE)
+
+map <- focal(svmPred_vsurf$L8_predict_VSURF_PCA, matrix(1,3,3), fun = modal)
+plot(svmPred_vsurf, main="Clasificaci?n VSURF - PCA - Filter Majority")
+writeRaster(map,'L8_predict_VSURF_PCA_Filter.tif',options=c('TFW=YES'), overwrite=TRUE)
+
+# Calcular la importancia de las variables en un modelo SVM basado en VSURF y PCA
+importancia_variables <- calculate_variable_importance(model_vsurf2, trainval_vsurf, as.factor(treespec))
+
+# Crear un gráfico de barras para visualizar la importancia de las variables
+barplot(importancia_variables, names.arg = colnames(trainval_vsurf), las = 2, main = "Importancia de las Variables VSURF-PCA SVM")
+
+
+
+############################################
+# clasificacion Random Forest
+############################################
+
+#Cargamos el shape de puntos de control
+ref <- readOGR(".", "geopoint")
+#lo ploteamos para verificar
+plot(ref)
+#revisamos su estructura
+head(ref@data)
+#revisamos las clases
+ref@data$Id
+#extraemos la informaci?n de las firmas espectrales a los puntos de control
+ref_hip_rf <- extract(L5_S1_TOPO, ref)
+
+ref_hip_rf <- as.data.frame(ref_hip_rf)	
+
+## Comprobar que haya hecho el cruce de los puntos con los valores de las bandas
+head(ref_hip_rf)
+
+#Le asignamos el id de la clase al data frame
+ref_hip_rf$Id <- ref@data$Id
+#Nuevamente corroboramos
+head(ref_hip_rf)
+#vemos los nombres de las columnas
+names(ref_hip_rf)
+
+#M?todo: Random Forest 
+tablavalores <- as.data.frame(ref_hip_rf)
+tablavalores$Id <- factor(tablavalores$Id, levels = c(1:30))
+na.omit(tablavalores$Id, TRUE)
+
+# Cargar tus datos y realizar las extracciones como lo hiciste previamente
+
+# Verificar la distribución de clases
+class_distribution <- table(tablavalores$Id)
+print(class_distribution)
+
+# Definir un umbral mínimo para el número de observaciones por clase
+umbral_minimo <- 3  # Ajusta este valor según tu necesidad
+
+# Identificar clases que no cumplen con el umbral mínimo
+clases_a_eliminar <- names(class_distribution[class_distribution < umbral_minimo])
+
+# Eliminar las clases que no cumplen con el umbral mínimo
+tablavalores <- tablavalores[!(tablavalores$Id %in% clases_a_eliminar), ]
+
+tablavalores <- tablavalores[tablavalores$Id %in% unique(ref@data$Id), ]
+
+
+# Verificar la distribución de clases después de la eliminación
+class_distribution <- table(tablavalores$Id)
+print(class_distribution)
+
+# Asegúrate de que tu variable de respuesta es un factor
+tablavalores$Id <- as.factor(tablavalores$Id)
+
+# Usa droplevels() para eliminar los niveles con recuento cero
+tablavalores$Id <- droplevels(tablavalores$Id)
+
+# Ajustar el modelo Random Forest
+modelRF <- randomForest(x = tablavalores[, c(1:30)], y = tablavalores$Id, ntree = 500, importance = TRUE, do.trace = FALSE)
+
+#modelRF <- randomForest(x=tablavalores[ ,c(1:30)], y=tablavalores$Id,ntree=500, importance = TRUE, do.trace=FALSE)
+#colnames(modelRF$confusion) <- c("1 = Pasto", "2 = Arb?reo", "3 = Pavimento", "4 = Impermeable", "5 = Piscina", "6 = Sombra", "7 = Cancha", "8 = Impermeable2","9 = Pasto", "10 = Arb?reo", "11 = Pavimento", "12 = Impermeable", "13 = Piscina", "14 = Sombra", "15 = Cancha", "16 = Impermeable2", "17 = Sombra", "18 = Cancha","error de clase")
+#rownames(modelRF$confusion) <- c("1 = Pasto", "2 = Arb?reo", "3 = Pavimento", "4 = Impermeable", "5 = Piscina", "6 = Sombra", "7 = Cancha", "8 = Impermeable2","9 = Pasto", "10 = Arb?reo", "11 = Pavimento", "12 = Impermeable", "13 = Piscina", "14 = Sombra", "15 = Cancha", "16 = Impermeable2", "17 = Sombra", "18 = Cancha")
+modelRF
+
+summary(modelRF)
+varImpPlot(modelRF) #opcional
+setwd("D:/Personal/OHC/PaperQuintero/Resultados/Revision1")
+#predLC2 <- predict(modelRF, model=modelRF, filename="sar_predict_RF_2.tif", na.rm=TRUE, overwrite=TRUE)
+#save(modelRF, file="prediction_modelRF.RData")
+#plot(predLC2)
+
+###predicci?n sobre Random Forest
+img2 <- predict(L5_S1_TOPO, model=modelRF, filename="Clasificación_RF.tif", na.rm=TRUE, overwrite=TRUE)
+plot(img2, main="Clasificacion RF", )
+### matriz de confusion
+
+# Asegúrate de que tus predicciones y valores reales son factores
+prediccion <- as.factor(modelRF$predicted)
+valores_reales <- as.factor(tablavalores$Id)
+
+# Usa confusionMatrix() para crear la matriz de confusiones
+library(caret)
+cm <- confusionMatrix(prediccion, valores_reales)
+
+# Imprime la matriz de confusiones
+print(cm)
+
+
+
+#opcional
+# Uniremos al dataframe que contiene la firma espectral en los puntos de referencia
+#ref_data_tr$Cu_PPM <- ref@data$Cu_PPM
+ref_data_tr$x <- ref@data$ESTE
+ref_data_tr$y <- ref@data$NORTE
+# Nombre de las capas para comprobar que se haya incorporado el id
+head(ref_data_tr)
+
+#Convertir en Objeto espacial
+# Carga las librerías necesarias
+library(sp)
+library(rgdal)
+
+# Convierte ref_data_tr a un objeto Spatial
+coordinates(ref_data_tr) <- ~ESTE+NORTE
+
+# Ahora puedes usar writeOGR
+writeOGR(ref_data_tr, dsn = "D:/Personal/OHC/PaperQuintero/Resultados/Revision1", layer= "geopoint_BD", driver = "ESRI Shapefile")
+
+
+#writeOGR(ref_data_tr, dsn = "D:/Personal/OHC/PaperQuintero/Resultados/Revision1", layer= "geopoint_BD", driver = "ESRI Shapefile")
+write.table(ref_data_tr, file="GeomorfoPredictor.txt", sep = ";", row.names = FALSE, quote = FALSE)
+write.csv(ref_data_tr, file="GeomorfoPredictor.csv", sep = "/t", row.names = FALSE, quote = FALSE)
+
+# cargar caret
+library(caret)
+setwd('D:/Personal/OHC/PaperQuintero/Resultados/Revision1')
+write.csv(ref_data_tr, file="GeomorfoPredictorQuintero.csv", sep = "/t", row.names = FALSE, quote = FALSE)
+
+data <- read.csv('GeomorfoPredictorQuintero.csv')
+
+# Mostrar el resultado
+head(data)
+
+data$Id <- NULL
+data$ESTE <- NULL
+data$NORTE <- NULL
+data$optional <- NULL
+data$clase <- NULL
+names(data)
+head(data)
+
+data$Id <- as.factor(data$Id)
+
+#data <- select(data, 1:31)
+
+# Alternativamente, puedes usar read.csv() o read.delim() para archivos CSV o delimitados
+# datos <- read.csv(ruta_archivo)
+# datos <- read.delim(ruta_archivo, sep = "\t")
+
+# Imprimir los primeros registros del archivo cargado
+head(data)
+
+set.seed(523)
+idx <- createDataPartition(data$Id, p = 0.7, list = F)
+entrenar <- data[idx, ]
+validar  <- data[-idx, ]
+
+tr_control <- trainControl(method = 'cv', number = 10)
+
+# --------------------
+# PLS
+# --------------------
+
+# Ahora, data2$media_bandas contiene las medias de las bandas en L5_S1_TOPO
+
+
+PLS <- train(Id ~ ., data = entrenar, method = "pls", tuneLength = 14, 
+             trControl = tr_control, preProcess = c("center", "scale"), 
+             metric = "Kappa", maximize = TRUE)
+
+PLS
+
+PLS$results
+
+plot(PLS$results[, 1:2], type='l')
+abline(v=10, lty=2)
+
+
+PLS2 <- update(PLS, param = list(ncomp = 9))
+PLS2
+
+
+pred_pls <- predict(PLS2, validar)
+
+
+mat_pls <- confusionMatrix(pred_pls, validar$Id)
+mat_pls
+
+
+mat_pls$overall # Exactitud y Kappa
+mat_pls$table   # matriz de confusiÃ³n
+mat_pls$byClass # datos por clase
+
+imp_pls <- varImp(PLS2)
+plot(imp_pls)
+
+imp_pls2 <- rowMeans(imp_pls$importance)
+barplot(imp_pls2, las=2)
+
+imp_pls3 <- as.vector(rowMeans(PLS2$finalModel$coefficients)) # suma por fila de los coeficientes
+imp_pls3 <- imp_pls3 / sd(imp_pls3) # normalizaciÃ³n de los componentes
+
+par(mar=c(8,4,1,1))
+barplot(imp_pls3, names.arg=PLS$coefnames, las=2, ylab="Coeficientes normalizados")
+abline(0, 0, lty=2)
+
+# --------------------
+# RF
+# --------------------
+
+RF <- train(Id ~., data = entrenar, method = "rf",  tuneLength=16, 
+            trControl = tr_control, metric = "Kappa", maximize = T)
+RF
+
+
+pred_rf <- predict(RF, validar)
+
+
+mat_rf <- confusionMatrix(pred_rf, validar$Id)
+mat_rf$overall
+
+
+imp_rf <- varImp(RF)
+plot(imp_rf)
+
+# Visualización de la importancia de las variables
+imp_rf <- varImp(RF)
+# Visualización de la importancia de las variables en un solo gráfico (resumen)
+plot(imp_rf)
+
+# Extraer la importancia de las variables
+importancia_variables_rf <- imp_rf$importance
+
+# Crear un gráfico de barras para visualizar la importancia de las variables
+barplot(importancia_variables_rf$Overall, names.arg = rownames(importancia_variables_rf), las = 2, main = "Importancia de las Variables RF")
+
+# --------------------
+# SVM
+# --------------------
+
+SVM <- train(Id ~., data=entrenar, method = "svmLinear2",  tuneLength=16, 
+             preProc = c("center", "scale"), trControl = tr_control, metric = "Kappa", maximize = T)
+SVM
+
+
+pred_svm <- predict(SVM, validar)
+
+
+mat_svm <- confusionMatrix(pred_svm, validar$Id)
+mat_svm$overall
+mat_svm$table
+
+svmCoef <- t(SVM$finalModel$coefs) %*% SVM$finalModel$SV # Extraer los  coeficientes
+imp_svm <- colMeans(svmCoef)
+imp_svm <- imp_svm / sd(imp_svm) ## scale pseudo-coefficients
+
+
+par(mar=c(8,4,1,1))
+barplot(imp_svm, names.arg=PLS$coefnames, las=2, ylab="Coeficientes normalizados")
+abline(0, 0, lty=2)
+
+# Comparamos los 3 modelos respecto a su valor Kappa
+barplot(c(mat_pls$overall["Kappa"], mat_rf$overall["Kappa"], mat_svm$overall["Kappa"]),
+        names.arg = c('PLS', 'RF', 'SVM'), ylab='Kappa')
+
+# --------------------------------
+# Prediccion a capa raster
+# --------------------------------
+
+library(raster)
+setwd('D:/Personal/OHC/PaperQuintero/Resultados/Revision1')
+#raster <- stack('Predictivas_PNN_L8.tif')
+
+plot(L5_S1_TOPO)
+class(raster)
+
+#names(raster) == colnames(data[, 1:ncol(data)-1])
+
+#names(raster) <- colnames(data[, 1:ncol(data)-1])
+
+#names(raster)
+
+
+img <- predict(L5_S1_TOPO, RF)
+img2<- predict(L5_S1_TOPO, SVM)
+img3 <- predict(L5_S1_TOPO, PLS)
+
+plot(img, main='Random Forest')
+plot(img2, main='SVM')
+plot(img3, main='PLS')
+
+writeRaster(img, "Geomorfo_Quintero_RF_MET2.tif")
+writeRaster(img, "Geomorfo_Quintero_SVM_MET2.tif")
+writeRaster(img, "Geomorfo_Quintero_PLS.tif")
