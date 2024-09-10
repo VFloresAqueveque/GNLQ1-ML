@@ -1,7 +1,7 @@
 ###################################
 #Proyecto Geomorfología
 #Aplicación Geomorfología
-#Autores: Hugo Neira Santander / Valentina Flores Aqueveque / Cristina Ortega Painepan
+#Autores: Hugo Neira Santander / Valentina Flores Aqueveque / Cristina Ortega Caurapan
 ###################################
 
 library(caret)
